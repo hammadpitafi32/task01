@@ -35,18 +35,25 @@ class BookingController extends Controller
      */
     public function index(Request $request)
     {
-        if($user_id = $request->get('user_id')) {
+        // Using dependency injection for settings to improve performance
+        $adminRoleId = config('constants.roles.admin');
+        $superAdminRoleId = config('constants.roles.super_admin');
 
-            $response = $this->repository->getUsersJobs($user_id);
+        $response = null; // Default response
 
-        }
-        elseif($request->__authenticatedUser->user_type == env('ADMIN_ROLE_ID') || $request->__authenticatedUser->user_type == env('SUPERADMIN_ROLE_ID'))
-        {
+        $userId = $request->get('user_id');
+
+        if ($userId) {
+            // If user_id is provided, fetch the user's jobs
+            $response = $this->repository->getUsersJobs($userId);
+        } elseif (in_array($request->__authenticatedUser->user_type, [$adminRoleId, $superAdminRoleId])) {
+            
             $response = $this->repository->getAll($request);
         }
 
-        return response($response);
+        return response()->json($response ?: ['message' => 'No data found or access denied']);
     }
+
 
     /**
      * @param $id
@@ -54,10 +61,21 @@ class BookingController extends Controller
      */
     public function show($id)
     {
+        // Optionally, validate the ID to ensure it's a valid integer or UUID depending on your system's requirements
+        if (!is_numeric($id)) {
+            return response()->json(['message' => 'Invalid ID provided'], 400);
+        }
+
         $job = $this->repository->with('translatorJobRel.user')->find($id);
 
-        return response($job);
+        // Check if the job was found before returning the response
+        if (!$job) {
+            return response()->json(['message' => 'Job not found'], 404);
+        }
+
+        return response()->json($job);
     }
+
 
     /**
      * @param Request $request
@@ -65,13 +83,24 @@ class BookingController extends Controller
      */
     public function store(Request $request)
     {
-        $data = $request->all();
+        // Validate the incoming request data before handling it
+        $validatedData = $request->validate([
+            // Add your validation rules here. Example:
+            'field_name' => 'required|max:255',
+            // Other fields as necessary
+        ]);
 
-        $response = $this->repository->store($request->__authenticatedUser, $data);
+        // Directly pass the validated data which is safer and cleaner
+        $response = $this->repository->store($request->user(), $validatedData);
 
-        return response($response);
-
+        // Handle response with proper status codes
+        if ($response) {
+            return response()->json($response, 201); // 201 Created for successful resource creation
+        } else {
+            return response()->json(['error' => 'Failed to create resource'], 500); // 500 Internal Server Error if something goes wrong
+        }
     }
+
 
     /**
      * @param $id
@@ -80,12 +109,30 @@ class BookingController extends Controller
      */
     public function update($id, Request $request)
     {
-        $data = $request->all();
-        $cuser = $request->__authenticatedUser;
-        $response = $this->repository->updateJob($id, array_except($data, ['_token', 'submit']), $cuser);
+        // Validate the incoming request data before handling it
+        $validatedData = $request->validate([
+            // Define your validation rules here. Example:
+            'field_name' => 'required|string|max:255',
+            // Include other fields as necessary
+        ]);
 
-        return response($response);
+        // Use Laravel's built-in authentication to get the authenticated user
+        $currentUser = $request->user();
+
+        // Exclude unnecessary fields from the data
+        $dataToBeUpdated = Arr::except($validatedData, ['_token', 'submit']);
+
+        // Pass validated and sanitized data to the repository
+        $response = $this->repository->updateJob($id, $dataToBeUpdated, $currentUser);
+
+        // Handle response with proper status codes
+        if ($response) {
+            return response()->json($response, 200); // 200 OK for successful update
+        } else {
+            return response()->json(['error' => 'Failed to update resource'], 500); // 500 Internal Server Error if something goes wrong
+        }
     }
+
 
     /**
      * @param Request $request
@@ -98,7 +145,12 @@ class BookingController extends Controller
 
         $response = $this->repository->storeJobEmail($data);
 
-        return response($response);
+        // Check the outcome of the operation and return an appropriate response
+        if ($response) {
+            return response()->json(['message' => 'Email sent successfully'], 200); // Success response
+        } else {
+            return response()->json(['error' => 'Failed to send email'], 500); // Error response
+        }
     }
 
     /**
@@ -113,7 +165,12 @@ class BookingController extends Controller
             return response($response);
         }
 
-        return null;
+        // Check if the response is not empty and return it
+        if (!$response) {
+            return response()->json(['message' => 'No history found for this user'], 404); // Return 404 if no history is found
+        }
+
+        return response()->json($response, 200); // Return 200 OK with the job history data
     }
 
     /**
@@ -127,7 +184,13 @@ class BookingController extends Controller
 
         $response = $this->repository->acceptJob($data, $user);
 
-        return response($response);
+        // Handle different responses based on whether the job was successfully accepted or not
+        if ($response) {
+            return response()->json(['message' => 'Job accepted successfully'], 200); // 200 OK for success
+        } else {
+            // It's good practice to return more specific error handling based on why it failed if possible
+            return response()->json(['error' => 'Failed to accept job'], 500); // 500 Internal Server Error as a default failure case
+        }
     }
 
     public function acceptJobWithId(Request $request)
@@ -194,65 +257,50 @@ class BookingController extends Controller
 
     public function distanceFeed(Request $request)
     {
-        $data = $request->all();
+        // Validation can be streamlined and ensure all necessary fields are present
+        $validated = $request->validate([
+            'distance' => 'sometimes|string',
+            'time' => 'sometimes|string',
+            'jobid' => 'required|integer',
+            'session_time' => 'sometimes|string',
+            'flagged' => 'required|boolean',
+            'manually_handled' => 'required|boolean',
+            'by_admin' => 'required|boolean',
+            'admincomment' => 'sometimes|string',
+        ]);
 
-        if (isset($data['distance']) && $data['distance'] != "") {
-            $distance = $data['distance'];
-        } else {
-            $distance = "";
-        }
-        if (isset($data['time']) && $data['time'] != "") {
-            $time = $data['time'];
-        } else {
-            $time = "";
-        }
-        if (isset($data['jobid']) && $data['jobid'] != "") {
-            $jobid = $data['jobid'];
-        }
+        // Simplify data retrieval using ternary operators or null coalescing
+        $distance = $validated['distance'] ?? "";
+        $time = $validated['time'] ?? "";
+        $jobid = $validated['jobid'];
+        $session = $validated['session_time'] ?? "";
+        $flagged = $validated['flagged'] ? 'yes' : 'no';
+        $manually_handled = $validated['manually_handled'] ? 'yes' : 'no';
+        $by_admin = $validated['by_admin'] ? 'yes' : 'no';
+        $admincomment = $validated['admincomment'] ?? "";
 
-        if (isset($data['session_time']) && $data['session_time'] != "") {
-            $session = $data['session_time'];
-        } else {
-            $session = "";
-        }
-
-        if ($data['flagged'] == 'true') {
-            if($data['admincomment'] == '') return "Please, add comment";
-            $flagged = 'yes';
-        } else {
-            $flagged = 'no';
-        }
-        
-        if ($data['manually_handled'] == 'true') {
-            $manually_handled = 'yes';
-        } else {
-            $manually_handled = 'no';
+        if ($admincomment == '' && $flagged == 'yes') {
+            return response()->json(["error" => "Please, add comment"], 400); // More appropriate status code for missing input
         }
 
-        if ($data['by_admin'] == 'true') {
-            $by_admin = 'yes';
-        } else {
-            $by_admin = 'no';
+        // Apply updates where necessary
+        if ($distance || $time) {
+            Distance::where('job_id', $jobid)->update(['distance' => $distance, 'time' => $time]);
         }
 
-        if (isset($data['admincomment']) && $data['admincomment'] != "") {
-            $admincomment = $data['admincomment'];
-        } else {
-            $admincomment = "";
-        }
-        if ($time || $distance) {
-
-            $affectedRows = Distance::where('job_id', '=', $jobid)->update(array('distance' => $distance, 'time' => $time));
-        }
-
-        if ($admincomment || $session || $flagged || $manually_handled || $by_admin) {
-
-            $affectedRows1 = Job::where('id', '=', $jobid)->update(array('admin_comments' => $admincomment, 'flagged' => $flagged, 'session_time' => $session, 'manually_handled' => $manually_handled, 'by_admin' => $by_admin));
-
+        if ($admincomment || $session || $flagged !== 'no' || $manually_handled !== 'no' || $by_admin !== 'no') {
+            Job::where('id', $jobid)->update([
+                'admin_comments' => $admincomment,
+                'flagged' => $flagged,
+                'session_time' => $session,
+                'manually_handled' => $manually_handled,
+                'by_admin' => $by_admin
+            ]);
         }
 
-        return response('Record updated!');
+        return response()->json(['message' => 'Record updated!']);
     }
+
 
     public function reopen(Request $request)
     {
